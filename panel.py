@@ -26,7 +26,7 @@ import re
 
 
 class PanelModel:
-    def __init__(self, formula, effects = "random", robust = False, data = None):
+    def __init__(self, formula, effects = "random", time_fe = False, entity_fe = False, robust = False, data = None):
         legalEffects = ["fixed", "random"]
         self.formula = formula
         if effects in legalEffects:
@@ -52,6 +52,11 @@ class PanelModel:
         self.idVar = self.panel.major_axis
         self.indepVars = re.findall(r"\w+",formula)[1:]
         self.depVar = re.findall(r"\w+",formula)[0]
+
+        if time_fe:
+            self.formula = self.formula + "C(%s)" %self.timeVar
+        if entity_fe and effects == "random":
+            self.formula = self.formula + "C(%s)" %self.idVar
 
         ### attributes to be defined later:
         self.bse = None
@@ -85,8 +90,6 @@ class PanelModel:
         self.balanceChecker()
         if self.balanced:
             self.betasREBalanced()
-
-
         else:
             if self.robust:
                 pass
@@ -94,21 +97,43 @@ class PanelModel:
                 pass
 
     def fixedEffects(self):
-        self.balanceChecker()
-        if self.balanced:
-            if self.robust:
-                pass
-            else:
-                pass
-        else:
-            if self.robust:
-                pass
-            else:
-                pass
+        pooledDf = self.panel.to_frame().reset_index()
+        formulaFE = self.formula + " + C(%s)" %self.idVar
+        if not self.robust:
+            print "Sorry for the inconvenience but this result is of type: statsmodels.regression.linear_model.RegressionResultsWrapper"
+        FE = sm.ols(formula=formulaFE, data = pooledDf).fit()
+        if self.robust:
+            pooledDf['resid'] = FE.resid
+            groupBY = pooledDf[self.indepVars].groupby('route')
+            meanBY = groupBY.mean()
+            XDemeaned = pooledDf[self.indepVars] - meanBY
+            for id in self.idVar:
+                tempData = XDemeaned[pooledDf[pooledDf.columns[0]] == id]
+
+
+
+
+
+
+
+            self.bse = None
+            self.cov_params = None
+            self.params = None
+            self.feParams = None
+            self.pvalues = None
+            self.betas = None
+            self.Sigma = None
+            self.SigmaRobust = None
+
+
+
+            robustFE = FE.get_robustcov_results(cov_type='HC0', use_t=True)
+            return robustFE
+        return FE
 
     def betasREBalanced(self):
         #first estimate the pooled model and obtain the residuals
-        pooledDF = self.panel.to_frame()
+        pooledDF = self.panel.to_frame().reset_index()
         pooledModel = sm.ols(formula = self.formula, data = pooledDF).fit()
         sigmaSqV = pooledModel.ssr/pooledModel.df_resid
         sigmaSqC = 0
