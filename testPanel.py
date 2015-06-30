@@ -1,5 +1,5 @@
 ########################################################################################################################
-#Program: panel.py
+#Program: testPanel.py
 #Project: Panel Models
 #Author: Josh Taylor
 #Last Edited: 6/30/15
@@ -23,9 +23,13 @@
 import statsmodels.formula.api as sm
 import pandas as pd
 import numpy as np
+from numpy.linalg import inv
 import scipy as sp
 from math import sqrt
 import re
+
+
+#path to this file: C:\Users\jtaylor\Projects\Prais-Winsten\Python\Code\panel_models\testPanel.py
 
 
 class PanelModel:
@@ -53,7 +57,7 @@ class PanelModel:
         if type(data) is not pd.core.panel.Panel:
             raise ValueError("Data must be a panel dataframe, i.e. of type pandas.core.panel.Panel")
         self.panel = data
-        self.pooledDF = self.panel.to_frame()
+        self.pooledDF = self.panel.to_frame(filter_observations = False).reset_index()
         self.balanced = True
         self.timeVals = self.panel.minor_axis
         self.idVals = self.panel.major_axis
@@ -91,7 +95,7 @@ class PanelModel:
         message = "This panel is balanced"
         for id in self.idVals:
             for t in self.timeVals:
-                if t not in self.panel.major_xs(self.panel.major_axis[id]).index: #checking if each id has all times
+                if t not in self.panel.major_xs(id).index: #checking if each id has all times
                     message = "This panel is unbalanced"
                     self.balanced = False
                     break
@@ -155,7 +159,7 @@ class PanelModel:
                 sumXDemeaned += tempSumXDemeaned.T * tempResid * tempResid.T * tempSumXDemeaned
 
             X = np.matrix(XDemeaned.as_matrix())
-            self.cov_params_robust = (X.T * X).inv * sumXDemeaned * (X.T * X).inv
+            self.cov_params_robust = inv(X.T * X) * sumXDemeaned * inv(X.T * X)
             self.bse = pd.Series()
             for i in range(len(self.indepVars)):
                 self.bse[self.indepVars[i]] = sqrt(self.cov_params_robust[i,i])
@@ -173,18 +177,18 @@ class PanelModel:
 
     def betasREBalanced(self):
         #first estimate the pooled model and obtain the residuals
-        self.pooledDF = self.panel.to_frame().reset_index()
         pooledModel = sm.ols(formula = self.formula, data = self.pooledDF).fit()
         sigmaSqV = pooledModel.ssr/pooledModel.df_resid
         sigmaSqC = 0
-        tTime = self.timeVals[:-1]
-        sTime = self.timeVals[1:]
+        tTime = self.timeVals.tolist()[:-1]
+        idList = self.idVals.tolist()
+        timeList = self.timeVals.tolist()
         for id in self.idVals:
             for t in tTime:
+                tIndex = self.timeVals.tolist().index(t)
+                sTime = self.timeVals.tolist()[(tIndex + 1):]
                 for s in sTime:
-                    if t == s:
-                        continue
-                    sigmaSqC += pooledModel.resid[id].loc[t]*pooledModel.resid[id].loc[s]
+                    sigmaSqC += pooledModel.resid[idList.index(id)*len(timeList) + timeList.index(t)]*pooledModel.resid[idList.index(id)*len(timeList) + timeList.index(s)]
         sigmaSqC /=(((self.pooledDF.shape[0]*(len(self.timeVals) - 1))/2) - pooledModel.df_model)
         sigmaSqU = sigmaSqV - sigmaSqC
         tempSigmaSqC = np.matrix(np.ones((len(self.timeVals), len(self.timeVals)))*sigmaSqC)
@@ -195,20 +199,20 @@ class PanelModel:
         for id in self.idVals:
             tempData = np.matrix(self.panel.major_xs(id)[self.indepVars].as_matrix())
             tempY = np.matrix(self.panel.major_xs(id)[self.depVar].as_matrix())
-            tempA += tempData.T * self.omega.inv * tempData
-            tempXOY += tempData.T * self.omega.inv * tempY
-
-        _params = tempA.inv * tempXOY
+            tempA += tempData.T * inv(self.omega) * tempData
+            tempXOY += tempData.T * inv(self.omega) * tempY.T
+        _params = (inv(tempA) * tempXOY).A1
         self.params = pd.Series(_params, self.indepVars)
-        _cov_params = tempA.inv/len(self.idVals)
+        _cov_params = inv(tempA)
         self.cov_params = pd.DataFrame(_cov_params, self.indepVars, self.indepVars)
         self.bse = pd.Series()
+        print _cov_params
         for i in range(len(self.indepVars)):
-            self.bse[self.indepVars[i]] = sqrt(self.cov_params[i,i])
+            self.bse[self.indepVars[i]] = sqrt(_cov_params.item((i,i)))
         self.tvalues = self.params/self.bse
         _df = np.ones(len(self.indepVars))*(self.pooledDF.shape[0] - len(self.indepVars) - 2)
-        self.pvalues = sp.stats.tvalues.sf(self.tvalues, _df)*2
-        self.fittedvalues = self.pooledDF * self.params
+        self.pvalues = sp.stats.t.sf(self.tvalues, _df)*2
+        #TODO: self.fittedvalues = (self.pooledDF[self.indepVars].as_matrix() * (np.array(self.params)).T)
         self.resid = self.pooledDF[self.depVar] - self.fittedvalues
         self.mse = np.sum(self.resid**2)/(self.pooledDF.shape[0] - len(self.indepVars) - 2)
         self.rmse = sqrt(self.mse)
@@ -223,8 +227,8 @@ class PanelModel:
                 tempData = np.matrix(self.panel.major_xs(id)[self.indepVars].as_matrix())
                 tempY = np.matrix(self.panel.major_xs(id)[self.depVar].as_matrix())
                 tempResid = tempY - tempData*self.params
-                tempB += tempData.T * self.omega.inv * tempResid * tempResid.T * self.omega.inv * tempData
-            _cov_params_robust = (tempA.inv * tempB * tempA.inv) / len(self.idVals)
+                tempB += tempData.T * inv(self.omega) * tempResid * tempResid.T * inv(self.omega) * tempData
+            _cov_params_robust = (inv(tempA) * tempB * inv(tempA)) / len(self.idVals)
             self.cov_params_robust = pd.DataFrame(_cov_params_robust, self.indepVars, self.indepVars)
             for i in range(len(self.indepVars)):
                 self.bse[self.indepVars[i]] = sqrt(self.cov_params_robust[i,i])
@@ -258,11 +262,12 @@ class PanelModel:
 
 
 
-
-
-
-
-
+cornwell = pd.read_csv("C:\Users\jtaylor\Downloads\cornwell.csv")
+cornwell['constant'] = 1
+cornwell = cornwell.set_index(['county', 'year'])
+cornwellPanel = cornwell.to_panel()
+cornwellModel = PanelModel(formula='crmrte ~ polpc + urban + prbpris', data= cornwellPanel)
+cornwellRE = cornwellModel.fit()
 
 
 
