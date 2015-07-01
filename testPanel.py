@@ -36,7 +36,7 @@ class PanelModel:
 
 
 
-    def __init__(self, formula, effects = "random", time_fe = False, entity_fe = False, robust = False, data = None):
+    def __init__(self, formula, effects = "random", intercept = True, time_fe = False, entity_fe = False, robust = False, data = None):
         legalEffects = ["fixed", "random"]
         self.formula = formula
         if effects in legalEffects:
@@ -63,13 +63,33 @@ class PanelModel:
         self.idVals = self.panel.major_axis
         self.indepVars = re.findall(r"\w+",formula)[1:]
         self.depVar = re.findall(r"\w+",formula)[0]
+        self.intercept = intercept
+        if self.intercept:
+            _needIntercept = True
+            for v in self.indepVars:
+                if len(pd.unique(self.panel[v].values.ravel())) == 1:
+                    _needIntercept = False
+            if _needIntercept:
+                self.panel['constant'] = 1
+                self.indepVars.append('constant')
         self.idVar = self.panel.to_frame().reset_index().columns[0]
         self.timeVar = self.panel.to_frame().reset_index().columns[1]
 
         if time_fe:
-            self.formula = self.formula + "C(%s)" %self.timeVar
+            if self.effects == "fixed":
+                self.formula = self.formula + " + C(%s)" %self.timeVar
+            else:
+                for s in self.timeVals:
+                    self.pooledDF['t%s' %s] = self.pooledDF[self.timeVar] == s
+                    if s == self.timeVals[0]:
+                        continue
+                    self.formula += " + t%s" %s
+                    self.indepVars.append('t%s' %s)
+                _tempPanel= self.pooledDF.set_index([self.idVar, self.timeVar])
+                self.panel = _tempPanel.to_panel()
+
         if entity_fe and effects == "random":
-            self.formula = self.formula + "C(%s)" %self.idVar
+            self.formula = self.formula + " + C(%s)" %self.idVar
 
         ### attributes to be defined later:
         self.params = None
@@ -104,8 +124,10 @@ class PanelModel:
     def fit(self):
         if self.effects == "fixed":
             self.fixedEffects()
+            return self
         elif self.effects == 'random':
             self.randomEffects()
+            return self
 
     def randomEffects(self):
         self.balanceChecker()
@@ -206,13 +228,12 @@ class PanelModel:
         _cov_params = inv(tempA)
         self.cov_params = pd.DataFrame(_cov_params, self.indepVars, self.indepVars)
         self.bse = pd.Series()
-        print _cov_params
         for i in range(len(self.indepVars)):
             self.bse[self.indepVars[i]] = sqrt(_cov_params.item((i,i)))
         self.tvalues = self.params/self.bse
         _df = np.ones(len(self.indepVars))*(self.pooledDF.shape[0] - len(self.indepVars) - 2)
         self.pvalues = sp.stats.t.sf(self.tvalues, _df)*2
-        #TODO: self.fittedvalues = (self.pooledDF[self.indepVars].as_matrix() * (np.array(self.params)).T)
+        self.fittedvalues = np.dot(self.pooledDF[self.indepVars].as_matrix(), (np.array(self.params)).T)
         self.resid = self.pooledDF[self.depVar] - self.fittedvalues
         self.mse = np.sum(self.resid**2)/(self.pooledDF.shape[0] - len(self.indepVars) - 2)
         self.rmse = sqrt(self.mse)
@@ -266,8 +287,8 @@ cornwell = pd.read_csv("C:\Users\jtaylor\Downloads\cornwell.csv")
 cornwell['constant'] = 1
 cornwell = cornwell.set_index(['county', 'year'])
 cornwellPanel = cornwell.to_panel()
-cornwellModel = PanelModel(formula='crmrte ~ polpc + urban + prbpris', data= cornwellPanel)
-cornwellRE = cornwellModel.fit()
+cornwellRE1 = PanelModel(formula='crmrte ~ polpc + urban + prbpris', data= cornwellPanel).fit()
+cornwellRE2 = PanelModel(formula='crmrte ~ polpc + urban + prbpris', data= cornwellPanel, time_fe=True).fit()
 
 
 
